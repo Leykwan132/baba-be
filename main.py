@@ -1,9 +1,9 @@
 from typing import Union, List, Optional, Dict
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException
-from langchain.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 import uuid
+from uuid import uuid4
 import oss2
 import os
 import getpass
@@ -11,6 +11,8 @@ import fitz  # PyMuPDF
 from dotenv import load_dotenv
 from io import BytesIO
 from langchain.schema import Document
+from fastapi.middleware.cors import CORSMiddleware
+
 from dotenv import load_dotenv
 
 # Vector store and embeddings
@@ -40,6 +42,14 @@ if not os.environ.get("GOOGLE_API_KEY"):
 
 app = FastAPI()
 embedding = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # or ["*"] for any origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ChatMessage(BaseModel):
     role: str
@@ -254,18 +264,19 @@ async def chat(chat_input: ChatInput) -> ResponseStructure:
         section=response.content
     )
 
+class PDFProcessRequest(BaseModel):
+    filename: str
+
 class PDFProcessResponse(BaseModel):
     document_id: str
     success: bool
     
-    
-
 @app.post("/process-pdf")
-async def process_pdf(filename: str) -> PDFProcessResponse:
+async def process_pdf(request: PDFProcessRequest) -> PDFProcessResponse:
     try:    
         # Download PDF from OSS path
         bucket = oss2.Bucket(oss2.Auth(access_key_id, access_key_secret), endpoint, bucket_name)
-        key = filename
+        key = request.filename
 
         # Get PDF data directly as bytes
         pdf_data = bucket.get_object(key).read()
@@ -342,8 +353,7 @@ async def process_pdf(filename: str) -> PDFProcessResponse:
                 embedding_function=embedding,
             )
             
-            print(splits)
-            # Add documents to vector store with metadata
+             # Add documents to vector store with metadata
             vectorstore.add_documents(
                 documents=splits,
                 ids=[f"{document_id}_{i}" for i in range(len(splits))]
