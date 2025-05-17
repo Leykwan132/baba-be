@@ -13,7 +13,7 @@ from io import BytesIO
 from langchain.schema import Document
 from fastapi.middleware.cors import CORSMiddleware
 import json
-
+from getpass import getpass
 from dotenv import load_dotenv
 
 # Vector store and embeddings
@@ -28,22 +28,22 @@ from langchain.schema import Document
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.llms import Tongyi
+from openai import OpenAI
 
 load_dotenv()
-
-if not os.environ.get("GOOGLE_API_KEY"):
-    os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter API key for Google Gemini: ")
     
 access_key_id = os.environ.get('OSS_KEY_ID')
 access_key_secret = os.environ.get('OSS_KEY_SECRET')
 bucket_name = os.environ.get('OSS_BUCKET')
 endpoint = os.environ.get('OSS_TEST_ENDPOINT')
 
-
-
-
 app = FastAPI()
 embedding = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+client = OpenAI(
+    api_key=os.environ.get("DASHSCOPE_API_KEY"), # If you have not configured the environment variable, replace DASHSCOPE_API_KEY with your API key
+    base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",  # Replace https://dashscope-intl.aliyuncs.com/compatible-mode/v1 with the base_url of the DashScope SDK
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,61 +79,6 @@ class ResponseStructure(BaseModel):
     section: List[Section]
 
 
-section : [
-    # NODE 1
-    {
-        "header": "What is the definition of a vector?",
-        # SUPPORT POINTS
-        "subheader": [
-            {
-                "title": "Definition",
-                "description": "A vector is a mathematical object that has both magnitude and direction. It is represented by an arrow with a length and a direction.",
-                "sources": [1, 2, 3]
-            },
-            {
-                "title": "Example",
-                "description": "A vector can be represented as an arrow with length 3 and direction pointing to the right.",
-                "sources": [4, 5]
-            }
-        ]
-    },
-    # NODE 2
-     {
-        "header": "What is the definition of a vector?",
-        # SUPPORT POINTS
-        "subheader": [
-            {
-                "title": "Definition",
-                "description": "A vector is a mathematical object that has both magnitude and direction. It is represented by an arrow with a length and a direction.",
-                "sources": [1, 2, 3]
-            },
-            {
-                "title": "Example",
-                "description": "A vector can be represented as an arrow with length 3 and direction pointing to the right.",
-                "sources": [4, 5]
-            }
-        ]
-    }
-    
-]
-
-
-    # Example usage remains the same
-chatInputParams = {
-    "messages": [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Who won the world series in 2020?"},
-        {"role": "assistant", "content": "The Los Angeles Dodgers won the World Series in 2020."},
-        {"role": "user", "content": "Where was it played?"}
-    ],
-    "document_id": None
-}
-
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
-
-
 @app.post('/chat')
 async def chat(chat_input: ChatInput) -> ResponseStructure:
     # Here you would implement the logic to:
@@ -153,12 +98,10 @@ async def chat(chat_input: ChatInput) -> ResponseStructure:
     # Get the conversation context with roles
     last_user_message = chat_input.messages[-1].content
     previous_response = chat_input.messages[-2].content if len(chat_input.messages) > 1 else ""
-    
-    # Combine with role labels for clearer context
+
+    # Combine with role labels for clearer context for retrieval
     search_query = f"Previous answer: {previous_response}\nFollow-up question: {last_user_message}".strip()
     all_docs = retriever.get_relevant_documents(search_query)
-    
-
 
     # Filter documents by document_id
     def filter_by_document_id(docs, doc_id):
@@ -172,13 +115,10 @@ async def chat(chat_input: ChatInput) -> ResponseStructure:
         for doc in relevant_docs
     ])
 
-    # Prompt and LLM
-    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
-    
-    prompt = ChatPromptTemplate.from_messages([
-        (
-            "system",
-            """You are an expert assistant that answers user questions and decomposes them into structured, well-organized subtopics if the topic is complex.
+    # --- Replace LangChain with OpenAI Client ---
+
+    # Define the system prompt
+    system_prompt_content = """You are an expert assistant that answers user questions and decomposes them into structured, well-organized subtopics if the topic is complex.
 
     Each response must follow these rules:
     1. If the question is complex, break it down into 2–5 smaller, manageable components. It can be definition/background that clarifies any terminology or prerequisites, step-by-step process that breaks the solution into clear, sequential steps, why/how it works that explain the reasoning or inner mechanics behind each step , examples that provide real-world or simplified examples, common pitfalls/gotchas the mention mistakes to avoid or important edge cases or summary/takaway that recaps the most important points.
@@ -207,9 +147,9 @@ async def chat(chat_input: ChatInput) -> ResponseStructure:
         }}
         ]
     }}],
-    
-    or 
-    
+
+    or
+
     "section": [
         {{
         "header": "<smaller manageble component 1 header>",
@@ -241,22 +181,57 @@ async def chat(chat_input: ChatInput) -> ResponseStructure:
         }}
     ]
     }},
-    
+
     ]
-    
+
     }}
 
     Do not add any extra commentary outside this JSON.
     """
-        ),
-        (
-            "user",
-            "Question: {question}\n\nContext:\n{context}"
+
+    # Construct the user message with question and context
+    user_message_content = f"Question: {last_user_message}\n\nContext:\n{context}"
+
+    # Prepare messages for OpenAI API
+    messages = [
+        {"role": "system", "content": system_prompt_content},
+        {"role": "user", "content": user_message_content}
+    ]
+
+    # Call OpenAI Chat Completions API
+    try:
+        openai_response = client.chat.completions.create(
+            model="qwen-plus", # Or "gpt-3.5-turbo" or another suitable model
+            messages=messages,
+            response_format={"type": "json_object"} # Request JSON object output
         )
-    ])
-    
-    
-    chain = prompt | llm
+
+        # Get the content from the response
+        content_str = openai_response.choices[0].message.content
+
+        # Parse the JSON string into the Pydantic model
+        # Pydantic's parse_raw handles the JSON parsing
+        parsed_response = ResponseStructure.parse_raw(content_str)
+
+        # Return the parsed Pydantic object
+        return parsed_response
+
+    except openai.APIError as e:
+        print(f"OpenAI API error: {e}")
+        raise HTTPException(status_code=500, detail=f"OpenAI API error: {e}")
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON from LLM: {e}")
+        print(f"LLM output: {content_str}")
+        raise HTTPException(status_code=500, detail=f"Invalid JSON response from LLM: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
+
+    completion = client.chat.completions.create(
+        model="qwen-plus", # Use qwn-plus as an example. You can use other models in the model list: https://www.alibabacloud.com/help/en/model-studio/getting-started/models
+        messages=[{'role': 'system', 'content': 'You are a helpful assistant.'},
+                  {'role': 'user', 'content': 'Who are you?'}]
+        )
     response = chain.invoke({"question": search_query, "context": context})
 
     # Extract the content from the response
