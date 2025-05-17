@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from io import BytesIO
 from langchain.schema import Document
 from fastapi.middleware.cors import CORSMiddleware
+import json
 
 from dotenv import load_dotenv
 
@@ -191,7 +192,7 @@ async def chat(chat_input: ChatInput) -> ResponseStructure:
 
     Format the entire output as a JSON object in this structure, if there are multiple smaller manageble components, the section can be an array that contains all the smaller manageble components:
     {{
-    "section": {{
+    "section": [{{
         "header": "<main answer title>",
         "subheader": [
         {{
@@ -205,7 +206,7 @@ async def chat(chat_input: ChatInput) -> ResponseStructure:
             "sources": [<array of page numbers where this information was found>]
         }}
         ]
-    }},
+    }}],
     
     or 
     
@@ -256,15 +257,20 @@ async def chat(chat_input: ChatInput) -> ResponseStructure:
     
     
     chain = prompt | llm
-    response = chain.invoke({"question": chat_input.question, "context": context})
+    response = chain.invoke({"question": search_query, "context": context})
 
-    console.log(response)
-    
-    
-    return ResponseStructure(
-        section=response.content
-    )
+    # Extract the content from the response
+    content_str = response.content
+    # Strip code block formatting
+    if content_str.startswith("```json"):
+        content_str = content_str.strip("`")       # removes all backticks
+        content_str = content_str.split("\n", 1)[1]  # removes the first line
+        content_str = content_str.rsplit("\n", 1)[0]  # removes the last line
 
+        # Parse the string as JSON
+    content_str = json.loads(content_str)
+    return content_str
+  
 class PDFProcessRequest(BaseModel):
     filename: str
 
