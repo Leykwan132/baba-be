@@ -13,6 +13,8 @@ import fitz  # PyMuPDF
 from dotenv import load_dotenv
 from io import BytesIO
 from langchain.schema import Document
+from fastapi.middleware.cors import CORSMiddleware
+
 
 load_dotenv()
 
@@ -25,6 +27,14 @@ endpoint = os.environ.get('OSS_TEST_ENDPOINT')
 
 app = FastAPI()
 embedding = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # or ["*"] for any origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ChatMessage(BaseModel):
     role: str
@@ -78,16 +88,19 @@ async def chat(chat_input: ChatInput) -> ChatResponse:
         ]
     )
 
+class PDFProcessRequest(BaseModel):
+    filename: str
+
 class PDFProcessResponse(BaseModel):
     document_id: str
     success: bool
 
 @app.post("/process-pdf")
-async def process_pdf(filename: str) -> PDFProcessResponse:
+async def process_pdf(request: PDFProcessRequest) -> PDFProcessResponse:
     try:    
         # Download PDF from OSS path
         bucket = oss2.Bucket(oss2.Auth(access_key_id, access_key_secret), endpoint, bucket_name)
-        key = filename
+        key = request.filename
 
         # Get PDF data directly as bytes
         pdf_data = bucket.get_object(key).read()
