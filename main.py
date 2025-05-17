@@ -32,10 +32,11 @@ load_dotenv()
 
 if not os.environ.get("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter API key for Google Gemini: ")
-    access_key_id = os.environ.get('OSS_KEY_ID')
-    access_key_secret = os.environ.get('OSS_KEY_SECRET')
-    bucket_name = os.environ.get('OSS_BUCKET')
-    endpoint = os.environ.get('OSS_TEST_ENDPOINT')
+    
+access_key_id = os.environ.get('OSS_KEY_ID')
+access_key_secret = os.environ.get('OSS_KEY_SECRET')
+bucket_name = os.environ.get('OSS_BUCKET')
+endpoint = os.environ.get('OSS_TEST_ENDPOINT')
 
 
 
@@ -317,9 +318,9 @@ async def process_pdf(request: PDFProcessRequest) -> PDFProcessResponse:
                                 })
                 
                 metadata = {
-                    "page_number": page_num + 1,
+                    "page_number": str(page_num + 1),
                     "source": document_id,
-                    "total_pages": len(doc),
+                    "total_pages": str(len(doc)),
                     # Store coordinates as a string representation or simplified format
                     "coordinate_summary": f"Page {page_num + 1} contains {len(coordinates)} text blocks"
                 }
