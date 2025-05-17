@@ -22,12 +22,17 @@ wheels/
 
 # Virtual Environment
 venv/
+venv_name/
 env/
 ENV/
 .env
 .venv
+.venv_name
 env.bak/
 venv.bak/
+
+chroma
+chroma/
 
 # IDE
 .idea/

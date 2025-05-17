@@ -3,8 +3,6 @@ from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException
 from langchain.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import uuid
 import oss2
 import os
@@ -13,16 +11,6 @@ import fitz  # PyMuPDF
 from dotenv import load_dotenv
 from io import BytesIO
 from langchain.schema import Document
-
-load_dotenv()
-
-if not os.environ.get("GOOGLE_API_KEY"):
-  os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter API key for Google Gemini: ")
-access_key_id = os.environ.get('OSS_KEY_ID')
-access_key_secret = os.environ.get('OSS_KEY_SECRET')
-bucket_name = os.environ.get('OSS_BUCKET')
-endpoint = os.environ.get('OSS_TEST_ENDPOINT')
-
 from dotenv import load_dotenv
 
 # Vector store and embeddings
@@ -38,6 +26,17 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
+load_dotenv()
+
+if not os.environ.get("GOOGLE_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter API key for Google Gemini: ")
+    access_key_id = os.environ.get('OSS_KEY_ID')
+    access_key_secret = os.environ.get('OSS_KEY_SECRET')
+    bucket_name = os.environ.get('OSS_BUCKET')
+    endpoint = os.environ.get('OSS_TEST_ENDPOINT')
+
+
+
 
 app = FastAPI()
 embedding = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
@@ -48,16 +47,63 @@ class ChatMessage(BaseModel):
 
 class ChatInput(BaseModel):
     messages: List[ChatMessage]
-    document_id: Optional[str] = None  # Optional document ID for context from vector DB
+    document_id: str   # Optional document ID for context from vector DB
 
 class SourceLocation(BaseModel):
     page_number: int
     position: Dict[str, float] = None  # x, y coordinates in the PDF
     text_snippet: str
 
-class ChatResponse(BaseModel):
-    response: str
-    sources: List[SourceLocation] = []
+class Subheader(BaseModel):
+    title: str
+    description: str
+    sources: List[int]
+
+class Section(BaseModel):
+    header: str
+    subheader: List[Subheader]
+
+class ResponseStructure(BaseModel):
+    section: List[Section]
+
+
+section : [
+    # NODE 1
+    {
+        "header": "What is the definition of a vector?",
+        # SUPPORT POINTS
+        "subheader": [
+            {
+                "title": "Definition",
+                "description": "A vector is a mathematical object that has both magnitude and direction. It is represented by an arrow with a length and a direction.",
+                "sources": [1, 2, 3]
+            },
+            {
+                "title": "Example",
+                "description": "A vector can be represented as an arrow with length 3 and direction pointing to the right.",
+                "sources": [4, 5]
+            }
+        ]
+    },
+    # NODE 2
+     {
+        "header": "What is the definition of a vector?",
+        # SUPPORT POINTS
+        "subheader": [
+            {
+                "title": "Definition",
+                "description": "A vector is a mathematical object that has both magnitude and direction. It is represented by an arrow with a length and a direction.",
+                "sources": [1, 2, 3]
+            },
+            {
+                "title": "Example",
+                "description": "A vector can be represented as an arrow with length 3 and direction pointing to the right.",
+                "sources": [4, 5]
+            }
+        ]
+    }
+    
+]
 
 
     # Example usage remains the same
@@ -77,103 +123,142 @@ def read_root():
 
 
 @app.post('/chat')
-async def chat(chat_input: ChatInput) -> ChatResponse:
+async def chat(chat_input: ChatInput) -> ResponseStructure:
     # Here you would implement the logic to:
     # 1. Get relevant context from vector DB if document_id is provided
     # 2. Generate response with sources
-    
 
-    # Load environment variables
-    load_dotenv()
-
-    pdf_list = [
-        {"path": "papers/biology.pdf", "id": "1"},
-        {"path": "papers/history.pdf", "id": "2"}
-    ]
-
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
-
-    vector_store = Chroma(
-        collection_name="example_collection",
-        embedding_function=embeddings,
-        persist_directory="./chroma_langchain_db"
+    # Reuse the embedding and vectorstore
+    vectorstore = Chroma(
+        collection_name="documents",
+        persist_directory="./data/chroma",
+        embedding_function=embedding,
     )
 
-    all_split_docs = []
-    for pdf in pdf_list:
-        loader = PyPDFLoader(pdf["path"])
-        raw_documents = loader.load()
-        documents = [
-            Document(page_content=doc.page_content, metadata={**doc.metadata, "pdf_id": pdf["id"]})
-            for doc in raw_documents
-        ]
-        split_docs = text_splitter.split_documents(documents)
-        all_split_docs.extend(split_docs)
+    # Define the retriever
+    retriever = vectorstore.as_retriever()
 
-    uuids = [str(uuid4()) for _ in all_split_docs]
-    vector_store.add_documents(all_split_docs, ids=uuids)
+    # Get the conversation context with roles
+    last_user_message = chat_input.messages[-1].content
+    previous_response = chat_input.messages[-2].content if len(chat_input.messages) > 1 else ""
+    
+    # Combine with role labels for clearer context
+    search_query = f"Previous answer: {previous_response}\nFollow-up question: {last_user_message}".strip()
+    all_docs = retriever.get_relevant_documents(search_query)
+    
 
-    # User question
-    query_pdf_id = "1"
-    user_prompt = "Who discovered cell?"
+
+    # Filter documents by document_id
+    def filter_by_document_id(docs, doc_id):
+        return [doc for doc in docs if doc.metadata.get("source") == doc_id]
+
+    relevant_docs = filter_by_document_id(all_docs, chat_input.document_id)
+
+    # Prepare context from filtered documents
+    context = "\n\n".join([
+        f"[Page {doc.metadata.get('page_number', 'unknown')}]:\n{doc.page_content}"
+        for doc in relevant_docs
+    ])
 
     # Prompt and LLM
     llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+    
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "You are an expert that answers questions based on the provided document context to help students to learn."
-            "Return your response in the following JSON format:\n\n"
-            "{{\n"
-            '  "answer": {{\n'
-            '    "Key1": "Description of Key1...",\n'
-            '    "Key2": "Description of Key2...",\n'
-            '    "Key3": "Description of Key3..."\n'
-            "  }},\n"
-            "}}\n\n"
-            "Only include relevant keys. If the answer is unknown, respond with:\n"
-            '{{ "answer": "I don’t know" }}'
+            """You are an expert assistant that answers user questions and decomposes them into structured, well-organized subtopics if the topic is complex.
+
+    Each response must follow these rules:
+    1. If the question is complex, break it down into 2–5 smaller, manageable components. It can be definition/background that clarifies any terminology or prerequisites, step-by-step process that breaks the solution into clear, sequential steps, why/how it works that explain the reasoning or inner mechanics behind each step , examples that provide real-world or simplified examples, common pitfalls/gotchas the mention mistakes to avoid or important edge cases or summary/takaway that recaps the most important points.
+    2. Every answer or smaller manageble component must be structured as a **node** with:
+    - "header" – a short title
+    - "subheader" – you can have multiple subheaders that explain this answer. Your explaination for each subheader should be in the description part.
+    - "description" – this will explain your subheader.
+    - "sources" – this will be an array that contains all the page numbers where this information was found.
+    3. If you don't know the answer to the question, just say "I don't know".
+
+
+    Format the entire output as a JSON object in this structure, if there are multiple smaller manageble components, the section can be an array that contains all the smaller manageble components:
+    {{
+    "section": {{
+        "header": "<main answer title>",
+        "subheader": [
+        {{
+            "title": "<subtopic 1 title>",
+            "description": "<detailed explanation of subtopic 1>"
+            "sources": [<array of page numbers where this information was found>]
+        }},
+        {{
+            "title": "<subtopic 2 title>",
+            "description": "<detailed explanation of subtopic 2>"
+            "sources": [<array of page numbers where this information was found>]
+        }}
+        ]
+    }},
+    
+    or 
+    
+    "section": [
+        {{
+        "header": "<smaller manageble component 1 header>",
+        "subheader": [
+        {{
+            "title": "<subtopic 1 title>",
+            "description": "<detailed explanation of subtopic 1>"
+            "sources": [<array of page numbers where this information was found>]
+        }},
+        {{
+            "title": "<subtopic 2 title>",
+            "description": "<detailed explanation of subtopic 2>"
+            "sources": [<array of page numbers where this information was found>]
+        }}
+        ]
+    }},
+     {{
+        "header": "<smaller manageble component 2 header>",
+        "subheader": [
+        {{
+            "title": "<subtopic 1 title>",
+            "description": "<detailed explanation of subtopic 1>"
+            "sources": [<array of page numbers where this information was found>]
+        }},
+        {{
+            "title": "<subtopic 2 title>",
+            "description": "<detailed explanation of subtopic 2>"
+            "sources": [<array of page numbers where this information was found>]
+        }}
+    ]
+    }},
+    
+    ]
+    
+    }}
+
+    Do not add any extra commentary outside this JSON.
+    """
         ),
         (
             "user",
-            "Question: {question}\nContext: {context}"
+            "Question: {question}\n\nContext:\n{context}"
         )
     ])
-
+    
+    
     chain = prompt | llm
-    retriever = vector_store.as_retriever()
+    response = chain.invoke({"question": chat_input.question, "context": context})
 
-    def filter_by_pdf_id(docs, pdf_id):
-        return [doc for doc in docs if doc.metadata.get("pdf_id") == pdf_id]
-
-    all_docs = retriever.get_relevant_documents(user_prompt)
-    docs = filter_by_pdf_id(all_docs, query_pdf_id)
-
-    context = "\n\n".join([doc.page_content for doc in docs])
-    response = chain.invoke({"question": user_prompt, "context": context})
-
-    print("Answer:", response.content)
-    print("\nTop Sources:")
-    for doc in docs:
-        print(f"- Page: {doc.metadata.get('page_label', 'unknown')}, PDF ID: {doc.metadata.get('pdf_id')}")
-        # print(doc.metadata) 
-
-    # Example response with source information
-    return ChatResponse(
-        response="The game was played at Globe Life Field in Arlington, Texas",
-        sources=[
-            SourceLocation(
-                page_number=1,
-                position={"x": 100, "y": 200},
-                text_snippet="The 2020 World Series was played at Globe Life Field..."
-            )
-        ]
+    console.log(response)
+    
+    
+    return ResponseStructure(
+        section=response.content
     )
 
 class PDFProcessResponse(BaseModel):
     document_id: str
     success: bool
+    
+    
 
 @app.post("/process-pdf")
 async def process_pdf(filename: str) -> PDFProcessResponse:
@@ -275,3 +360,5 @@ async def process_pdf(filename: str) -> PDFProcessResponse:
                     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error accessing OSS: {str(e)}")
+
+
